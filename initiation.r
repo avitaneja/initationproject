@@ -27,7 +27,7 @@ prediabetes <- no_diabetes & (
 mydata$prediabetes <- prediabetes
 cat("Prediabetes cases:", sum(prediabetes, na.rm = TRUE), "\n")
 
-# ---- Define pooled mean & SD (from your tables) ----
+# ---- Define pooled mean & SD ----
 pooled_mean <- c(
   age = 56.06254821,
   glycohemoglobin = 5.765865914,
@@ -54,7 +54,7 @@ pooled_sd <- c(
   hdl = 19.10282818
 )
 
-# ---- Define cluster means (from your first table) ----
+# ---- Define cluster means ----
 cluster_means <- data.frame(
   row.names = c(
     "1_Overweight_normotensive", "2_Dysglycemia",
@@ -166,4 +166,3 @@ saveRDS(list(mydata_clean = mydata_clean, hr_df = hr_df, table2 = table2),
         "NHANES_prediabetes_results.RDS")
 
 cat("✅ Analysis complete — all tables and figures saved.\n")
-
