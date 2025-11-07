@@ -16,23 +16,20 @@ library(xtable)
 setwd("/Users/avitaneja/Documents/emory/extracirriculars/research")
 mydata <- readRDS("rth01_selected df.RDS")
 
-# ---- Identify prediabetes ----
-no_diabetes <- (mydata$dm_doc_told == 2 | is.na(mydata$dm_age))
-prediabetes <- no_diabetes & (
-  (mydata$fasting_glucose >= 100 & mydata$fasting_glucose <= 125) |
-  (mydata$glycohemoglobin >= 5.6 & mydata$glycohemoglobin <= 6.4)
-)
-mydata$prediabetes <- prediabetes
-cat("Prediabetes cases:", sum(prediabetes, na.rm = TRUE), "\n")
 
 # ---- Filter to prediabetes cases ----
 eligible_people <- mydata %>%
   filter(
-    (dm_doc_told == 2 | is.na(dm_age)) & 
-    ((fasting_glucose >= 100 & fasting_glucose <= 125) |
-     (glycohemoglobin >= 5.6 & glycohemoglobin <= 6.4))
+    dm_doc_told != 1 &    # exclude those told they have diabetes
+    (fasting_glucose < 126 | is.na(fasting_glucose)) &
+    (glycohemoglobin < 6.5 | is.na(glycohemoglobin)) &
+    (
+      (fasting_glucose >= 100 & fasting_glucose <= 125) |
+      (glycohemoglobin >= 5.6 & glycohemoglobin <= 6.4)
+    )
   )
-  #View(eligible_people)
+
+  View(eligible_people)
 eligible_people %>% summarise(count = n())
 write.csv(eligible_people, "eligible_people.csv", row.names = FALSE)
 # ---- Impute missing data ----
@@ -187,4 +184,6 @@ saveRDS(list(imputed_eligible_people = imputed_eligible_people, hr_df = hr_df, t
         "NHANES_prediabetes_results.RDS")
 
 cat("✅ Analysis complete — all tables and figures saved.\n")
+
+
 
