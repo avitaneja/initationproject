@@ -1,7 +1,3 @@
-# ============================================================
-# NHANES Prediabetes Subtype Analysis (Final, Pooled Mean/SD)
-# ============================================================
-
 # ---- Load packages ----
 library(dplyr)
 library(survival)
@@ -12,7 +8,9 @@ library(DiagrammeR)
 library(DiagrammeRsvg)
 library(rsvg)
 library(xtable)
+library(missRanger)
 library(tableone)
+library(xtable)
 
 # ---- Set working directory and load data ----
 setwd("/Users/avitaneja/Documents/emory/extracirriculars/research")
@@ -27,6 +25,30 @@ prediabetes <- no_diabetes & (
 mydata$prediabetes <- prediabetes
 cat("Prediabetes cases:", sum(prediabetes, na.rm = TRUE), "\n")
 
+# ---- Filter to prediabetes cases ----
+eligible_people <- mydata %>%
+  filter(
+    (dm_doc_told == 2 | is.na(dm_age)) & 
+    ((fasting_glucose >= 100 & fasting_glucose <= 125) |
+     (glycohemoglobin >= 5.6 & glycohemoglobin <= 6.4))
+  )
+  #View(eligible_people)
+eligible_people %>% summarise(count = n())
+write.csv(eligible_people, "eligible_people.csv", row.names = FALSE)
+# ---- Impute missing data ----
+missing_summary <- sapply(eligible_people, function(x) sum(is.na(x)))
+missing_percent <- (missing_summary / nrow(eligible_people)) * 100
+missing_percent
+eligible_people_clean <- eligible_people[, missing_percent < 70]
+set.seed(42)
+imputed_eligible_people <- missRanger(
+  data = eligible_people_clean,
+  pmm.k = 3,             # predictive mean matching (more realistic imputations)
+  num.trees = 100,       # number of trees in each random forest
+  maxiter = 10,          # iterations until convergence
+  verbose = TRUE
+)
+write.csv(imputed_eligible_people, "eligible_people_imputed.csv", row.names = FALSE)
 # ---- Define pooled mean & SD ----
 pooled_mean <- c(
   age = 56.06254821,
@@ -89,7 +111,7 @@ vars <- c("age", "glycohemoglobin", "bmi", "homa2b", "homa2ir",
           "egfr", "sbp", "dbp", "ldl", "hdl")
 
 # ---- Scale NHANES and cluster centroids using pooled mean & SD ----
-data_scaled <- scale(mydata[, vars], center = pooled_mean, scale = pooled_sd)
+data_scaled <- scale(imputed_eligible_people[, vars], center = pooled_mean, scale = pooled_sd)
 cluster_scaled <- scale(cluster_means[, vars], center = pooled_mean, scale = pooled_sd)
 
 # ---- Assign closest cluster ----
@@ -98,20 +120,17 @@ assign_cluster <- function(row) {
   names(which.min(dists))
 }
 
-mydata$closest_cluster <- NA
-non_missing <- complete.cases(mydata[, vars])
-mydata$closest_cluster[non_missing] <- apply(data_scaled[non_missing, ], 1, assign_cluster)
+imputed_eligible_people[rowSums(is.na(eligible_people)) > 0, ]
+imputed_eligible_people$closest_cluster <- NA
+imputed_eligible_people$closest_cluster <- apply(data_scaled, 1, assign_cluster)
 
-# ---- Clean data for survival ----
-mydata_clean <- mydata[!is.na(mydata$mortstat) &
-                         !is.na(mydata$permth_int) &
-                         !is.na(mydata$closest_cluster), ]
+View(imputed_eligible_people %>% select(closest_cluster, all_of(vars)))
 
 # ---- Cox model comparing clusters to cluster 1 ----
-mydata_clean$closest_cluster <- factor(mydata_clean$closest_cluster,
+imputed_eligible_people$closest_cluster <- factor(imputed_eligible_people$closest_cluster,
                                        levels = rownames(cluster_means))
 cox_adj <- coxph(Surv(permth_int, mortstat) ~ closest_cluster + age + gender,
-                 data = mydata_clean)
+                 data = imputed_eligible_people)
 hr_df <- tidy(cox_adj, exponentiate = TRUE, conf.int = TRUE) %>%
   select(term, estimate, conf.low, conf.high, p.value) %>%
   mutate(term = gsub("closest_cluster", "", term)) %>%
@@ -122,22 +141,19 @@ hr_df
 
 # ---- Figure 1: Flowchart ----
 n_total <- nrow(mydata)
-n_pred <- sum(mydata$prediabetes, na.rm = TRUE)
-n_clean <- nrow(mydata_clean)
+n_pred <- nrow(imputed_eligible_people)
 flow <- grViz(paste0("
 digraph flowchart {
   node [shape=box, style=filled, fillcolor=lightgrey];
   A [label='Total NHANES participants (N=", n_total, ")'];
   B [label='Prediabetes identified (N=", n_pred, ")'];
-  C [label='Complete survival data (N=", n_clean, ")'];
-  A -> B -> C;
-}
-"))
+  A -> B;
+}"))
 rsvg_png(charToRaw(export_svg(flow)), "Figure1_flowchart.png")
 
 # ---- Figure 2: Cumulative incidence ----
-fit <- survfit(Surv(permth_int / 12, mortstat) ~ closest_cluster, data = mydata_clean)
-ggsurvplot(fit, data = mydata_clean, fun = "event",
+fit <- survfit(Surv(permth_int / 12, mortstat) ~ closest_cluster, data = imputed_eligible_people)
+ggsurvplot(fit, data = imputed_eligible_people, fun = "event",
            risk.table = TRUE, xlab = "Years", ylab = "Cumulative Incidence",
            legend.title = "Cluster",
            palette = c("red", "green3", "blue", "purple", "orange", "brown", "cyan"))
@@ -145,24 +161,30 @@ ggsave("Figure2_CumulativeIncidence.png", width = 7, height = 5)
 
 # ---- Table 1: Descriptive statistics ----
 vars_categorical <- c("gender", "mortstat")
-NHANEStable <- tableone::CreateTableOne(vars = vars,
-                                        strata = "closest_cluster",
-                                        data = mydata_clean,
-                                        factorVars = vars_categorical)
-print(NHANEStable, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE)
+NHANEStable <- tableone::CreateTableOne(
+  vars = vars,
+  strata = "closest_cluster",
+  data = imputed_eligible_people,
+  factorVars = vars_categorical,
+)
+print(NHANEStable, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE, 
+nonnormal = c("glycohemoglobin", "bmi", "homa2b", "homa2ir", "sbp", "ldl", "hdl")
+  ) 
 
-# ---- Table 2: Death summary by year ----
-mydata_clean$time_years <- mydata_clean$permth_exm / 12
-mydata_clean$year_interval <- floor(mydata_clean$time_years)
-table2 <- aggregate(mortstat ~ year_interval + closest_cluster, mydata_clean, sum)
-total_counts <- aggregate(mortstat ~ year_interval + closest_cluster, mydata_clean, length)
+# ---- Table 2: Death summary year ----
+View(imputed_eligible_people)
+imputed_eligible_people$time_years <- imputed_eligible_people$permth_exm / 12
+imputed_eligible_people$year_interval <- floor(imputed_eligible_people$time_years)
+table2 <- aggregate(mortstat ~ year_interval + closest_cluster, data = imputed_eligible_people, sum)
+total_counts <- aggregate(mortstat ~ year_interval + closest_cluster, data = imputed_eligible_people, length)
 table2$N_total <- total_counts$mortstat
 table2$percent_dead <- round((table2$mortstat / table2$N_total) * 100, 2)
-write.csv(table2, "Table2_DeathsByYear.csv", row.names = FALSE)
 table2
-
+latex_table <- xtable(table2[, c("year_interval", "closest_cluster", "mortstat", "N_total", "percent_dead")])
+print(latex_table, include.rownames = FALSE)
 # ---- Save results ----
-saveRDS(list(mydata_clean = mydata_clean, hr_df = hr_df, table2 = table2),
+saveRDS(list(imputed_eligible_people = imputed_eligible_people, hr_df = hr_df, table2 = table2),
         "NHANES_prediabetes_results.RDS")
 
 cat("✅ Analysis complete — all tables and figures saved.\n")
+
